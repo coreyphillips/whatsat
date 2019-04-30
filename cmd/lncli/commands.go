@@ -2132,7 +2132,28 @@ var sendPaymentCommand = cli.Command{
 
 // retrieveFeeLimit retrieves the fee limit based on the different fee limit
 // flags passed.
-func retrieveFeeLimit(ctx *cli.Context) (*lnrpc.FeeLimit, error) {
+func retrieveFeeLimit(ctx *cli.Context, amt int64) (int64, error) {
+	switch {
+
+	case ctx.IsSet("fee_limit") && ctx.IsSet("fee_limit_percent"):
+		return 0, fmt.Errorf("either fee_limit or fee_limit_percent " +
+			"can be set, but not both")
+
+	case ctx.IsSet("fee_limit"):
+		return ctx.Int64("fee_limit"), nil
+
+	case ctx.IsSet("fee_limit_percent"):
+		return amt * 100 / ctx.Int64("fee_limit_percent"), nil
+	}
+
+	// If no fee limit is set, use the payment amount as a limit.
+	return amt, nil
+}
+
+// retrieveFeeLimitLegacy retrieves the fee limit based on the different fee
+// limit flags passed. This function will eventually disappear in favor of
+// retrieveFeeLimit and the new payment rpc.
+func retrieveFeeLimitLegacy(ctx *cli.Context) (*lnrpc.FeeLimit, error) {
 	switch {
 	case ctx.IsSet("fee_limit") && ctx.IsSet("fee_limit_percent"):
 		return nil, fmt.Errorf("either fee_limit or fee_limit_percent " +
@@ -2179,7 +2200,7 @@ func sendPayment(ctx *cli.Context) error {
 	// If a payment request was provided, we can exit early since all of the
 	// details of the payment are encoded within the request.
 	if ctx.IsSet("pay_req") {
-		req := &lnrpc.SendRequest{
+		req := &routerrpc.SendPaymentRequest{
 			PaymentRequest: ctx.String("pay_req"),
 			Amt:            ctx.Int64("amt"),
 		}
@@ -2223,7 +2244,7 @@ func sendPayment(ctx *cli.Context) error {
 		}
 	}
 
-	req := &lnrpc.SendRequest{
+	req := &routerrpc.SendPaymentRequest{
 		Dest: destNode,
 		Amt:  amount,
 	}
@@ -2267,24 +2288,20 @@ func sendPayment(ctx *cli.Context) error {
 	return sendPaymentRequest(ctx, req)
 }
 
-func sendPaymentRequest(ctx *cli.Context, req *lnrpc.SendRequest) error {
-	client, cleanUp := getClient(ctx)
-	defer cleanUp()
+func sendPaymentRequest(ctx *cli.Context,
+	req *routerrpc.SendPaymentRequest) error {
 
-	// First, we'll retrieve the fee limit value passed since it can apply
-	// to both ways of sending payments (with the payment request or
-	// providing the details manually).
-	feeLimit, err := retrieveFeeLimit(ctx)
-	if err != nil {
-		return err
-	}
-	req.FeeLimit = feeLimit
+	conn := getClientConn(ctx, false)
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	routerClient := routerrpc.NewRouterClient(conn)
 
 	req.OutgoingChanId = ctx.Uint64("outgoing_chan_id")
-	req.CltvLimit = uint32(ctx.Int(cltvLimitFlag.Name))
+	req.CltvLimit = int32(ctx.Int(cltvLimitFlag.Name))
+	req.TimeoutSeconds = 60
 
 	amt := req.Amt
-
 	if req.PaymentRequest != "" {
 		req := &lnrpc.PayReqString{PayReq: req.PaymentRequest}
 		resp, err := client.DecodePayReq(context.Background(), req)
@@ -2305,40 +2322,74 @@ func sendPaymentRequest(ctx *cli.Context, req *lnrpc.SendRequest) error {
 		}
 	}
 
-	paymentStream, err := client.SendPayment(context.Background())
+	feeLimit, err := retrieveFeeLimit(ctx, amt)
+	if err != nil {
+		return err
+	}
+	req.FeeLimitSat = feeLimit
+
+	stream, err := routerClient.SendPayment(context.Background(), req)
 	if err != nil {
 		return err
 	}
 
-	if err := paymentStream.Send(req); err != nil {
-		return err
+	return readPaymentStatusStream(stream)
+}
+
+var trackPaymentCommand = cli.Command{
+	Name:      "trackpayment",
+	Category:  "Payments",
+	ArgsUsage: "hash",
+	Action:    actionDecorator(trackPayment),
+}
+
+func trackPayment(ctx *cli.Context) error {
+	args := ctx.Args()
+
+	conn := getClientConn(ctx, false)
+	defer conn.Close()
+
+	client := routerrpc.NewRouterClient(conn)
+
+	if !args.Present() {
+		return fmt.Errorf("hash argument missing")
 	}
 
-	resp, err := paymentStream.Recv()
+	hash, err := hex.DecodeString(args.First())
 	if err != nil {
 		return err
 	}
 
-	paymentStream.CloseSend()
-
-	printJSON(struct {
-		E string       `json:"payment_error"`
-		P string       `json:"payment_preimage"`
-		R *lnrpc.Route `json:"payment_route"`
-	}{
-		E: resp.PaymentError,
-		P: hex.EncodeToString(resp.PaymentPreimage),
-		R: resp.PaymentRoute,
-	})
-
-	// If we get a payment error back, we pass an error
-	// up to main which eventually calls fatal() and returns
-	// with a non-zero exit code.
-	if resp.PaymentError != "" {
-		return errors.New(resp.PaymentError)
+	req := &routerrpc.TrackPaymentRequest{
+		PaymentHash: hash,
 	}
 
-	return nil
+	stream, err := client.TrackPayment(context.Background(), req)
+	if err != nil {
+		return err
+	}
+
+	return readPaymentStatusStream(stream)
+}
+
+func readPaymentStatusStream(stream routerrpc.Router_TrackPaymentClient) error {
+	for {
+		status, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("State: %v\n", status.State)
+		if status.State == routerrpc.PaymentState_SUCCEEDED {
+			fmt.Printf("Preimage: %x\n", status.Preimage)
+			fmt.Printf("Route:\n")
+			printJSON(status.Route)
+		}
+
+		if status.State != routerrpc.PaymentState_IN_FLIGHT {
+			return nil
+		}
+	}
 }
 
 var payInvoiceCommand = cli.Command{
@@ -2369,7 +2420,7 @@ func payInvoice(ctx *cli.Context) error {
 		return fmt.Errorf("pay_req argument missing")
 	}
 
-	req := &lnrpc.SendRequest{
+	req := &routerrpc.SendPaymentRequest{
 		PaymentRequest: payReq,
 		Amt:            ctx.Int64("amt"),
 	}
@@ -3041,7 +3092,7 @@ func queryRoutes(ctx *cli.Context) error {
 		return fmt.Errorf("amt argument missing")
 	}
 
-	feeLimit, err := retrieveFeeLimit(ctx)
+	feeLimit, err := retrieveFeeLimitLegacy(ctx)
 	if err != nil {
 		return err
 	}

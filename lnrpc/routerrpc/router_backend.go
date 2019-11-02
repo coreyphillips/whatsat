@@ -8,6 +8,8 @@ import (
 	math "math"
 	"time"
 
+	"github.com/lightningnetwork/lnd/netann"
+
 	"github.com/btcsuite/btcd/btcec"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -60,6 +62,8 @@ type RouterBackend struct {
 	// MaxTotalTimelock is the maximum total time lock a route is allowed to
 	// have.
 	MaxTotalTimelock uint32
+
+	NodeSigner *netann.NodeSigner
 }
 
 // MissionControl defines the mission control dependencies of routerrpc.
@@ -472,6 +476,8 @@ func (r *RouterBackend) UnmarshallRoute(rpcroute *lnrpc.Route) (
 	return route, nil
 }
 
+var signedMsgPrefix = []byte("Lightning Signed Message:")
+
 // extractIntentFromSendRequest attempts to parse the SendRequest details
 // required to dispatch a client from the information presented by an RPC
 // client.
@@ -504,7 +510,20 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 		return nil, errors.New("timeout_seconds must be specified")
 	}
 
-	var destTLV map[uint64][]byte
+	destTLV := make(map[uint64][]byte)
+
+	msg := rpcPayReq.ChatMessage
+	if msg != "" {
+		prefixedMsg := append(signedMsgPrefix, msg...)
+		sigBytes, err := r.NodeSigner.SignCompact(prefixedMsg)
+		if err != nil {
+			return nil, err
+		}
+
+		destTLV[34349334] = []byte(msg)
+		destTLV[34349336] = sigBytes
+	}
+
 	if len(destTLV) != 0 {
 		var err error
 		payIntent.FinalDestRecords, err = tlv.MapToRecords(destTLV)

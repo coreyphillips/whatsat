@@ -4,12 +4,25 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"time"
 
-	"github.com/lightningnetwork/lightning-onion"
+	"github.com/lightningnetwork/lnd/routing/route"
+
+	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/tlv"
 )
+
+type ChatMessage struct {
+	Text   string
+	Sender route.Vertex
+}
+
+var ChatInbox = make(chan ChatMessage, 10000)
 
 // ErrInvalidPayload is an error returned when a parsed onion payload either
 // included or omitted incorrect records for a particular hop type.
@@ -67,6 +80,8 @@ func NewLegacyPayload(f *sphinx.HopData) *Payload {
 	}
 }
 
+var signedMsgPrefix = []byte("Lightning Signed Message:")
+
 // NewPayloadFromReader builds a new Hop from the passed io.Reader. The reader
 // should correspond to the bytes encapsulated in a TLV onion payload.
 func NewPayloadFromReader(r io.Reader) (*Payload, error) {
@@ -76,10 +91,15 @@ func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 		cltv uint32
 	)
 
+	var msg, msgSig []byte
+	msgRecord := tlv.MakePrimitiveRecord(34349334, &msg)
+	msgSigRecord := tlv.MakePrimitiveRecord(34349336, &msgSig)
+
 	tlvStream, err := tlv.NewStream(
 		record.NewAmtToFwdRecord(&amt),
 		record.NewLockTimeRecord(&cltv),
 		record.NewNextHopIDRecord(&cid),
+		msgRecord, msgSigRecord,
 	)
 	if err != nil {
 		return nil, err
@@ -91,6 +111,39 @@ func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 	}
 
 	nextHop := lnwire.NewShortChanIDFromInt(cid)
+
+	if msg != nil {
+		signedBy := "unsigned"
+		if msgSig != nil {
+			prefixedMsg := append(signedMsgPrefix, msg...)
+			digest := chainhash.DoubleHashB(prefixedMsg)
+
+			// RecoverCompact both recovers the pubkey and validates the signature.
+			pubKey, _, err := btcec.RecoverCompact(btcec.S256(), msgSig, digest)
+			if err != nil {
+				signedBy = "invalid sig"
+			} else {
+				sender, err := route.NewVertexFromBytes(pubKey.SerializeCompressed())
+				if err != nil {
+					return nil, err
+				}
+				signedBy = fmt.Sprintf("signed %v", sender)
+
+				chatMsg := ChatMessage{
+					Text:   string(msg),
+					Sender: sender,
+				}
+
+				select {
+				case ChatInbox <- chatMsg:
+				case <-time.After(time.Second):
+					log.Errorf("Chat inbox full, message dropped")
+				}
+			}
+		}
+
+		log.Infof("Message: %v (%v)", string(msg), signedBy)
+	}
 
 	// Validate whether the sender properly included or omitted tlv records
 	// in accordance with BOLT 04.

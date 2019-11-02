@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lightningnetwork/lnd/htlcswitch/hop"
+
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -73,6 +75,10 @@ var (
 			Action: "write",
 		}},
 		"/routerrpc.Router/BuildRoute": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
+		"/routerrpc.Router/ReceiveChatMessages": {{
 			Entity: "offchain",
 			Action: "read",
 		}},
@@ -671,4 +677,25 @@ func (s *Server) BuildRoute(ctx context.Context,
 	}
 
 	return routeResp, nil
+}
+
+// TrackPayment returns a stream of payment state updates. The stream is
+// closed when the payment completes.
+func (s *Server) ReceiveChatMessages(request *ReceiveChatMessagesRequest,
+	stream Router_ReceiveChatMessagesServer) error {
+	for {
+		select {
+		case chatMsg := <-hop.ChatInbox:
+			rpcChatMsg := ChatMessage{
+				Text:         chatMsg.Text,
+				SenderPubkey: chatMsg.Sender[:],
+			}
+			err := stream.Send(&rpcChatMsg)
+			if err != nil {
+				return err
+			}
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
 }

@@ -139,6 +139,9 @@ func chat(ctx *cli.Context) error {
 			defer cancel()
 			stream, err := client.SendPayment(ctx, &req)
 			if err != nil {
+				g.Update(func(g *gocui.Gui) error {
+					return err
+				})
 				return
 			}
 
@@ -171,7 +174,10 @@ func chat(ctx *cli.Context) error {
 		for {
 			chatMsg, err := stream.Recv()
 			if err != nil {
-				// return err
+				g.Update(func(g *gocui.Gui) error {
+					return err
+				})
+				return
 			}
 
 			if destination == nil {

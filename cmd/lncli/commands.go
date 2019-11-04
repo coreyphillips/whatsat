@@ -2328,8 +2328,6 @@ func sendPaymentRequest(ctx *cli.Context,
 	}
 	req.FeeLimitSat = feeLimit
 
-	req.ChatMessage = "client says hello world"
-
 	stream, err := routerClient.SendPayment(context.Background(), req)
 	if err != nil {
 		return err

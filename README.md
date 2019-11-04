@@ -5,7 +5,7 @@ can be used as an end-to-end encrypted, onion-routed, censorship-resistant, peer
 
 <img src="whatsat.gif" alt="screencast" width="880" />
 
-Recent changes to the protocol made it possible to attach arbitrary data to a payment. This demo leverages that by attaching a text message and a sender signature.
+Recent [changes to the protocol](https://github.com/lightningnetwork/lightning-rfc/pull/619) made it easier then before to attach arbitrary data to a payment. This demo leverages that by attaching a text message and a sender signature.
 
 A Lightning payment delivers the message, but no actual money is paid. Because the sender uses a random payment hash, the receiver is not able to settle the payment. The failure message that is returned to the sender serves as a delivery confirmation.
 

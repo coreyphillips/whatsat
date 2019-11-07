@@ -2132,7 +2132,7 @@ var sendPaymentCommand = cli.Command{
 
 // retrieveFeeLimit retrieves the fee limit based on the different fee limit
 // flags passed.
-func retrieveFeeLimit(ctx *cli.Context, amt int64) (int64, error) {
+func retrieveFeeLimit(ctx *cli.Context, amtMsat int64) (int64, error) {
 	switch {
 
 	case ctx.IsSet("fee_limit") && ctx.IsSet("fee_limit_percent"):
@@ -2143,11 +2143,11 @@ func retrieveFeeLimit(ctx *cli.Context, amt int64) (int64, error) {
 		return ctx.Int64("fee_limit"), nil
 
 	case ctx.IsSet("fee_limit_percent"):
-		return amt * 100 / ctx.Int64("fee_limit_percent"), nil
+		return amtMsat * 100 / ctx.Int64("fee_limit_percent"), nil
 	}
 
 	// If no fee limit is set, use the payment amount as a limit.
-	return amt, nil
+	return amtMsat, nil
 }
 
 // retrieveFeeLimitLegacy retrieves the fee limit based on the different fee
@@ -2177,9 +2177,9 @@ func retrieveFeeLimitLegacy(ctx *cli.Context) (*lnrpc.FeeLimit, error) {
 	return nil, nil
 }
 
-func confirmPayReq(resp *lnrpc.PayReq, amt int64) error {
+func confirmPayReq(resp *lnrpc.PayReq, amtMsat int64) error {
 	fmt.Printf("Description: %v\n", resp.GetDescription())
-	fmt.Printf("Amount (in satoshis): %v\n", amt)
+	fmt.Printf("Amount (in msats): %v\n", amtMsat)
 	fmt.Printf("Destination: %v\n", resp.GetDestination())
 
 	confirm := promptForConfirmation("Confirm payment (yes/no): ")
@@ -2202,7 +2202,7 @@ func sendPayment(ctx *cli.Context) error {
 	if ctx.IsSet("pay_req") {
 		req := &routerrpc.SendPaymentRequest{
 			PaymentRequest: ctx.String("pay_req"),
-			Amt:            ctx.Int64("amt"),
+			AmtMsat:        ctx.Int64("amt") * 1000,
 		}
 
 		return sendPaymentRequest(ctx, req)
@@ -2245,8 +2245,8 @@ func sendPayment(ctx *cli.Context) error {
 	}
 
 	req := &routerrpc.SendPaymentRequest{
-		Dest: destNode,
-		Amt:  amount,
+		Dest:    destNode,
+		AmtMsat: amount * 1000,
 	}
 
 	if ctx.Bool("debug_send") && (ctx.IsSet("payment_hash") || args.Present()) {
@@ -2301,7 +2301,7 @@ func sendPaymentRequest(ctx *cli.Context,
 	req.CltvLimit = int32(ctx.Int(cltvLimitFlag.Name))
 	req.TimeoutSeconds = 60
 
-	amt := req.Amt
+	amtMsat := req.AmtMsat
 	if req.PaymentRequest != "" {
 		req := &lnrpc.PayReqString{PayReq: req.PaymentRequest}
 		resp, err := client.DecodePayReq(context.Background(), req)
@@ -2311,22 +2311,22 @@ func sendPaymentRequest(ctx *cli.Context,
 
 		invoiceAmt := resp.GetNumSatoshis()
 		if invoiceAmt != 0 {
-			amt = invoiceAmt
+			amtMsat = invoiceAmt * 1000
 		}
 
 		if !ctx.Bool("force") {
-			err := confirmPayReq(resp, amt)
+			err := confirmPayReq(resp, amtMsat)
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	feeLimit, err := retrieveFeeLimit(ctx, amt)
+	feeLimitMsat, err := retrieveFeeLimit(ctx, amtMsat)
 	if err != nil {
 		return err
 	}
-	req.FeeLimitSat = feeLimit
+	req.FeeLimitMsat = feeLimitMsat
 
 	stream, err := routerClient.SendPayment(context.Background(), req)
 	if err != nil {
@@ -2422,7 +2422,7 @@ func payInvoice(ctx *cli.Context) error {
 
 	req := &routerrpc.SendPaymentRequest{
 		PaymentRequest: payReq,
-		Amt:            ctx.Int64("amt"),
+		AmtMsat:        ctx.Int64("amt") * 1000,
 	}
 
 	return sendPaymentRequest(ctx, req)

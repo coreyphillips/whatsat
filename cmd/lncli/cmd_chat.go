@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"strconv"
+	"strings"
 
 	"github.com/lightningnetwork/lnd/routing/route"
 
@@ -25,14 +25,15 @@ var chatCommand = cli.Command{
 }
 
 type chatLine struct {
-	sender, text        string
-	outgoing, delivered bool
-	amt                 int64
+	sender, text string
+	delivered    bool
+	fee          uint64
 }
 
 var (
-	msgLines    []chatLine
-	destination *route.Vertex
+	msgLines       []chatLine
+	destination    *route.Vertex
+	runningBalance map[route.Vertex]int64 = make(map[route.Vertex]int64)
 )
 
 func chat(ctx *cli.Context) error {
@@ -77,12 +78,6 @@ func chat(ctx *cli.Context) error {
 		return len(msgLines) - 1
 	}
 
-	delivered := func(idx int, feeMsat uint64) {
-		msgLines[idx].delivered = true
-		msgLines[idx].amt = -int64(feeMsat) - 1000
-		updateView(g)
-	}
-
 	sendMessage := func(g *gocui.Gui, v *gocui.View) error {
 		if len(v.BufferLines()) == 0 {
 			return nil
@@ -115,14 +110,18 @@ func chat(ctx *cli.Context) error {
 		}
 
 		msgIdx := addMsg(chatLine{
-			sender:   "me",
-			text:     newMsg,
-			outgoing: true,
+			sender: "me",
+			text:   newMsg,
 		})
+
+		payAmt := runningBalance[*destination]
+		if payAmt < 1000 {
+			payAmt = 1000
+		}
 
 		req := routerrpc.SendPaymentRequest{
 			ChatMessage:    newMsg,
-			AmtMsat:        1000,
+			AmtMsat:        payAmt,
 			FinalCltvDelta: 40,
 			Dest:           destination[:],
 			FeeLimitMsat:   10000,
@@ -147,7 +146,11 @@ func chat(ctx *cli.Context) error {
 				}
 
 				if status.State == routerrpc.PaymentState_SUCCEEDED {
-					delivered(msgIdx, uint64(status.Route.TotalFeesMsat))
+					msgLines[msgIdx].delivered = true
+					msgLines[msgIdx].fee = uint64(status.Route.TotalFeesMsat)
+					runningBalance[*destination] -= payAmt
+
+					updateView(g)
 					break
 				}
 
@@ -184,8 +187,9 @@ func chat(ctx *cli.Context) error {
 			addMsg(chatLine{
 				sender: sender,
 				text:   chatMsg.Text,
-				amt:    chatMsg.AmtReceivedMsat,
 			})
+
+			runningBalance[*destination] += chatMsg.AmtReceivedMsat
 		}
 	}()
 
@@ -233,13 +237,14 @@ func updateView(g *gocui.Gui) {
 	if destination == nil {
 		sendView.Title = " Set a destination by typing /pubkey "
 	} else {
-		sendView.Title = fmt.Sprintf(" Send to %x ", destination[:4])
+		sendView.Title = fmt.Sprintf(" Send to %x [balance: %v msat]",
+			destination[:4], runningBalance[*destination])
 	}
 
 	messagesView, _ := g.View("messages")
 	g.Update(func(g *gocui.Gui) error {
 		messagesView.Clear()
-		_, rows := messagesView.Size()
+		cols, rows := messagesView.Size()
 
 		startLine := len(msgLines) - rows
 		if startLine < 0 {
@@ -247,23 +252,50 @@ func updateView(g *gocui.Gui) {
 		}
 
 		for _, line := range msgLines[startLine:] {
-			fmt.Fprintf(messagesView,
-				"%8v: %v", line.sender,
-				line.text,
-			)
+			text := line.text
 
-			amtStr := strconv.FormatFloat(float64(line.amt)/1000.0, 'f', -1, 64)
-
-			switch {
-			case !line.outgoing:
-				fmt.Fprintf(messagesView, "  \x1b[36m[%v sat]\x1b[0m", amtStr)
-			case line.delivered:
-				fmt.Fprintf(messagesView, "  ✓ \x1b[36m[%v sat]\x1b[0m", amtStr)
+			var amtDisplay string
+			if line.delivered {
+				amtDisplay = formatMsat(line.fee)
 			}
+
+			maxTextFieldLen := cols - len(amtDisplay) - 12
+			maxTextLen := maxTextFieldLen
+			if line.delivered {
+				maxTextLen -= 2
+			}
+			if len(text) > maxTextLen {
+				text = text[:maxTextLen-3] + "..."
+			}
+			paddingLen := maxTextFieldLen - len(text)
+			if line.delivered {
+				text += " \x1b[34m✔️\x1b[0m"
+				paddingLen -= 2
+			}
+
+			text += strings.Repeat(" ", paddingLen)
+
+			fmt.Fprintf(messagesView, "%8v: %v \x1b[34m%v\x1b[0m",
+				line.sender,
+				text, amtDisplay,
+			)
 
 			fmt.Fprintln(messagesView)
 		}
 
 		return nil
 	})
+}
+
+func formatMsat(msat uint64) string {
+	wholeSats := msat / 1000
+	msats := msat % 1000
+	var msatsStr string
+	if msats > 0 {
+		msatsStr = fmt.Sprintf(".%03d", msats)
+		msatsStr = strings.TrimRight(msatsStr, "0")
+	}
+	return fmt.Sprintf("[%d%-4s sat]",
+		wholeSats, msatsStr,
+	)
 }

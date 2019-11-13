@@ -7,9 +7,7 @@ can be used as an end-to-end encrypted, onion-routed, censorship-resistant, peer
 
 Recent [changes to the protocol](https://github.com/lightningnetwork/lightning-rfc/pull/619) made it easier then before to attach arbitrary data to a payment. This demo leverages that by attaching a text message and a sender signature.
 
-A Lightning payment delivers the message, but no actual money is paid. Because the sender uses a random payment hash, the receiver is not able to settle the payment. The failure message that is returned to the sender serves as a delivery confirmation.
-
-This means that chatting is currently free. However, there is a future in which 'free failures' don't exist anymore. Nodes may start charging a prepaid relay fee and/or start rate limiting sources that produce too many failures. In that case, chatting over Lightning may switch to actually settling the messaging payments and dropping off a few millisats at every hop.
+Ideally users would send each other 0 sat payments and only drop off fees along the way. But that is currently not supported in the protocol. Also, there are minimum htlc amount constraints on channels. As a workaround, in anticipation of a true micropayment network, some money is paid to the recipient of the message. In this demo, it is 1000 msat. Both parties keeping a running balance of what they owe the other and send that back with the next message.
 
 ## Usage
 

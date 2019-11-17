@@ -145,16 +145,20 @@ func chat(ctx *cli.Context) error {
 					break
 				}
 
-				if status.State == routerrpc.PaymentState_SUCCEEDED {
-					msgLines[msgIdx].delivered = true
+				switch status.State {
+				case routerrpc.PaymentState_SUCCEEDED:
 					msgLines[msgIdx].fee = uint64(status.Route.TotalFeesMsat)
 					runningBalance[*destination] -= payAmt
+					fallthrough
 
+				case routerrpc.PaymentState_FAILED_INCORRECT_PAYMENT_DETAILS:
+					msgLines[msgIdx].delivered = true
 					updateView(g)
 					break
-				}
 
-				if status.State != routerrpc.PaymentState_IN_FLIGHT {
+				case routerrpc.PaymentState_IN_FLIGHT:
+
+				default:
 					break
 				}
 			}

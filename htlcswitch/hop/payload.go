@@ -127,7 +127,7 @@ func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 	var msg, msgSig, msgPreimage []byte
 	msgRecord := tlv.MakePrimitiveRecord(34349334, &msg)
 	msgSigRecord := tlv.MakePrimitiveRecord(34349336, &msgSig)
-	msgPreimageRecord := tlv.MakePrimitiveRecord(34349338, &msgPreimage)
+	msgPreimageRecord := tlv.MakePrimitiveRecord(34349337, &msgPreimage)
 
 	tlvStream, err := tlv.NewStream(
 		record.NewAmtToFwdRecord(&amt),

@@ -545,7 +545,7 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 
 		destTLV[34349334] = []byte(msg)
 		destTLV[34349336] = sigBytes
-		destTLV[34349338] = preimage[:]
+		destTLV[34349337] = preimage[:]
 	}
 
 	if len(destTLV) != 0 {

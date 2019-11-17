@@ -455,21 +455,28 @@ func (i *InvoiceRegistry) processChat(hash lntypes.Hash,
 		return nil
 	}
 
+	var preimage *lntypes.Preimage
+	if len(chatMsg.Preimage) > 0 {
+		pre, err := lntypes.MakePreimage(chatMsg.Preimage)
+		if err != nil {
+			log.Debugf("invalid preimage on chat message: %v", err)
+			return nil
+		}
+
+		if pre.Hash() != hash {
+			log.Debugf("mismatching preimage on chat message")
+			return nil
+		}
+
+		preimage = &pre
+	} else {
+		amtPaid = 0
+	}
+
 	processedChatMsg := ChatMessage{
 		Text:        string(chatMsg.Text),
 		Sender:      sender,
 		ReceivedAmt: amtPaid,
-	}
-
-	preimage, err := lntypes.MakePreimage(chatMsg.Preimage)
-	if err != nil {
-		log.Debugf("invalid preimage on chat message: %v", err)
-		return nil
-	}
-
-	if preimage.Hash() != hash {
-		log.Debugf("mismatching preimage on chat message")
-		return nil
 	}
 
 	select {
@@ -480,7 +487,8 @@ func (i *InvoiceRegistry) processChat(hash lntypes.Hash,
 	}
 
 	log.Infof("Chat message received from %v", sender)
-	return &preimage
+
+	return preimage
 }
 
 // NotifyExitHopHtlc attempts to mark an invoice as settled. If the invoice is a
